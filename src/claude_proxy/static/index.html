@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Claude Capture Viewer</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+    <h1>Claude Capture Viewer</h1>
+    <span id="total" class="total">Total: 0</span>
+    <input id="search" type="search" placeholder="filter by path...">
+    <button id="refresh">Refresh</button>
+    <label class="auto-refresh">
+        <input type="checkbox" id="auto"> auto (5s)
+    </label>
+</header>
+
+<main class="layout">
+    <aside class="list" id="list">
+        <div class="empty" id="empty">
+            No captured requests yet. Start Claude Code against the proxy to see traffic here.
+        </div>
+    </aside>
+    <section class="detail" id="detail">
+        <div class="placeholder">Select a request to view details.</div>
+    </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
