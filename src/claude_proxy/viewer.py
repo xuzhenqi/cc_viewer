@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .dump import DATA_DIR
+from . import dump
 
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -33,6 +33,13 @@ def _summary(path: Path) -> dict | None:
     messages = body.get("messages") if isinstance(body, dict) else None
     msg_count = len(messages) if isinstance(messages, list) else None
 
+    headers = data.get("headers") or {}
+    session_id = None
+    for k, v in headers.items():
+        if k.lower() == "x-claude-code-session-id" and isinstance(v, str) and v.strip():
+            session_id = v.strip()
+            break
+
     return {
         "filename": path.name,
         "n": data.get("n"),
@@ -42,6 +49,7 @@ def _summary(path: Path) -> dict | None:
         "body_bytes_len": data.get("body_bytes_len"),
         "model": model,
         "msg_count": msg_count,
+        "session_id": session_id,
     }
 
 
@@ -50,10 +58,10 @@ app = FastAPI(title="Claude Capture Viewer")
 
 @app.get("/api/requests")
 async def list_requests() -> dict:
-    if not DATA_DIR.exists():
+    if not dump.DATA_DIR.exists():
         return {"total": 0, "items": []}
 
-    files = sorted(DATA_DIR.glob("req-*.json"), reverse=True)
+    files = sorted(dump.DATA_DIR.glob("req-*.json"), reverse=True)
     items = [s for s in (_summary(p) for p in files) if s is not None]
     return {"total": len(items), "items": items}
 
@@ -62,7 +70,7 @@ async def list_requests() -> dict:
 async def get_request(filename: str) -> dict:
     if not _FILENAME_RE.match(filename):
         raise HTTPException(status_code=400, detail="invalid filename")
-    path = DATA_DIR / filename
+    path = dump.DATA_DIR / filename
     if not path.is_file():
         raise HTTPException(status_code=404, detail="not found")
     try:

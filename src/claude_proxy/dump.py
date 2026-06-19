@@ -18,6 +18,12 @@ DATA_DIR = Path("data")
 SENSITIVE_HEADERS = {"x-api-key", "authorization", "cookie", "set-cookie", "proxy-authorization"}
 
 
+def configure_data_dir(path: str | Path) -> None:
+    """Override the data directory. Must be called before serving traffic."""
+    global DATA_DIR
+    DATA_DIR = Path(path).resolve()
+
+
 def _redact_headers(headers: dict) -> dict:
     return {
         k: ("<redacted>" if k.lower() in SENSITIVE_HEADERS else v)

@@ -22,3 +22,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 claude_proxy = ["py.typed", "static/*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

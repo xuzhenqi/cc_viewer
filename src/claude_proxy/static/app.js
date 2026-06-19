@@ -9,6 +9,8 @@ const autoEl = document.getElementById("auto");
 let allItems = [];
 let selectedFile = null;
 let autoTimer = null;
+const collapsedSessions = new Set();
+const NO_SESSION = "(no session)";
 
 function fmtTime(ts) {
     if (!ts) return "";
@@ -46,7 +48,9 @@ async function loadList() {
 function renderList() {
     const q = searchEl.value.trim().toLowerCase();
     const filtered = q
-        ? allItems.filter(it => (it.path || "").toLowerCase().includes(q))
+        ? allItems.filter(it =>
+            (it.path || "").toLowerCase().includes(q) ||
+            (it.session_id || "").toLowerCase().includes(q))
         : allItems;
 
     if (filtered.length === 0) {
@@ -62,19 +66,60 @@ function renderList() {
     }
     emptyEl.style.display = "none";
 
-    const frag = document.createDocumentFragment();
+    const groups = new Map();
     for (const it of filtered) {
-        const row = document.createElement("div");
-        row.className = "row" + (it.filename === selectedFile ? " selected" : "");
-        row.dataset.file = it.filename;
-        row.innerHTML = `
-            <span class="n">${esc(String(it.n ?? "?").padStart(5, "0"))}</span>
-            <span class="method ${esc(it.method || "")}">${esc(it.method || "")}</span>
-            <span class="path" title="${esc(it.path || "")}">${esc(it.path || "")}</span>
-            <span class="meta">${esc(fmtTime(it.ts))} ${esc(fmtSize(it.body_bytes_len))}</span>
+        const key = it.session_id || NO_SESSION;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(it);
+    }
+    const groupKeys = [...groups.keys()].sort((a, b) => {
+        if (a === NO_SESSION) return 1;
+        if (b === NO_SESSION) return -1;
+        return (groups.get(b)[0].ts || "").localeCompare(groups.get(a)[0].ts || "");
+    });
+
+    const frag = document.createDocumentFragment();
+    for (const key of groupKeys) {
+        const items = groups.get(key);
+        const isCollapsed = collapsedSessions.has(key);
+
+        const header = document.createElement("div");
+        header.className = "session-header" + (isCollapsed ? " collapsed" : "");
+        header.dataset.session = key;
+        header.innerHTML = `
+            <span class="toggle">▾</span>
+            <span class="session-label" title="${esc(key)}">${esc(key)}</span>
+            <span class="session-count">${items.length}</span>
         `;
-        row.addEventListener("click", () => loadDetail(it.filename));
-        frag.appendChild(row);
+
+        const children = document.createElement("div");
+        children.className = "session-children" + (isCollapsed ? " collapsed" : "");
+        children.dataset.session = key;
+
+        header.addEventListener("click", (e) => {
+            e.stopPropagation();
+            const nowCollapsed = children.classList.toggle("collapsed");
+            header.classList.toggle("collapsed", nowCollapsed);
+            if (nowCollapsed) collapsedSessions.add(key);
+            else collapsedSessions.delete(key);
+        });
+
+        for (const it of items) {
+            const row = document.createElement("div");
+            row.className = "row" + (it.filename === selectedFile ? " selected" : "");
+            row.dataset.file = it.filename;
+            row.innerHTML = `
+                <span class="n">${esc(String(it.n ?? "?").padStart(5, "0"))}</span>
+                <span class="method ${esc(it.method || "")}">${esc(it.method || "")}</span>
+                <span class="path" title="${esc(it.path || "")}">${esc(it.path || "")}</span>
+                <span class="meta">${esc(fmtTime(it.ts))} ${esc(fmtSize(it.body_bytes_len))}</span>
+            `;
+            row.addEventListener("click", () => loadDetail(it.filename));
+            children.appendChild(row);
+        }
+
+        frag.appendChild(header);
+        frag.appendChild(children);
     }
     listEl.innerHTML = "";
     listEl.appendChild(frag);
