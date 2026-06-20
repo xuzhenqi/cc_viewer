@@ -220,3 +220,205 @@ table.headers td.v.redacted { color: #555; font-style: italic; }
 }
 .meta-grid .k { color: #888; }
 .meta-grid .v { color: #d0d0d0; }
+
+/* ---------------------------------------------------------------------------
+   Compact-message rendering
+   --------------------------------------------------------------------------- */
+
+.messages { display: flex; flex-direction: column; gap: 6px; }
+
+.msg {
+    border: 1px solid #2a2a2a;
+    border-radius: 4px;
+    padding: 0;
+    background: #1c1c1c;
+    overflow: hidden;
+}
+.msg-user      { border-left: 3px solid #7ea8c9; }
+.msg-assistant { border-left: 3px solid #7ec9b8; }
+.msg-system    { border-left: 3px solid #c97ec9; }
+.msg-unknown   { border-left: 3px solid #555; }
+
+.msg-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: #222;
+    font-size: 11px;
+}
+.msg-header .msg-idx {
+    color: #888;
+    font-family: monospace;
+}
+.msg-header .msg-stats {
+    color: #aaa;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.role-badge {
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 2px;
+    font-weight: 600;
+    text-transform: lowercase;
+    letter-spacing: 0.3px;
+}
+.role-badge.role-user      { background: #2d3a4a; color: #7ea8c9; }
+.role-badge.role-assistant { background: #2d4a44; color: #7ec9b8; }
+.role-badge.role-system    { background: #4a2d4a; color: #c97ec9; }
+.role-badge.role-unknown   { background: #333; color: #888; }
+
+.msg-body { padding: 4px 0; }
+.msg-body > * { margin: 4px 8px; }
+.msg-body > *:first-child { margin-top: 6px; }
+.msg-body > *:last-child  { margin-bottom: 6px; }
+
+.msg-body .user-text {
+    background: #1a2530;
+    border-left: 2px solid #7ea8c9;
+}
+
+.msg-body .image-block {
+    background: #141414;
+    border: 1px dashed #444;
+    color: #888;
+    text-align: center;
+    font-style: italic;
+}
+
+/* Collapsible system / tool / thinking blocks */
+.sys-block {
+    background: #141414;
+    border: 1px solid #2a2a2a;
+    border-left: 2px solid #444;
+    border-radius: 3px;
+    padding: 0;
+}
+.sys-block summary {
+    cursor: pointer;
+    padding: 5px 10px;
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    color: #aaa;
+    font-size: 11px;
+    user-select: none;
+}
+.sys-block summary:hover { background: #1a1a1a; }
+.sys-block summary::-webkit-details-marker { display: none; }
+.sys-block summary::before {
+    content: "▸";
+    color: #666;
+    font-size: 9px;
+    width: 10px;
+    display: inline-block;
+    transition: transform 0.1s;
+}
+.sys-block[open] > summary::before { transform: rotate(90deg); }
+
+.sys-block .kind-label {
+    font-weight: 600;
+    color: #c0c0c0;
+    flex-shrink: 0;
+}
+.sys-block .kind-preview {
+    color: #888;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    font-family: monospace;
+    font-size: 11px;
+}
+.sys-block .kind-count {
+    background: #2d4a2d;
+    color: #7ec97e;
+    padding: 0 5px;
+    border-radius: 8px;
+    font-size: 10px;
+    flex-shrink: 0;
+}
+.sys-block .kind-meta {
+    color: #555;
+    font-family: monospace;
+    font-size: 10px;
+    flex-shrink: 0;
+}
+.sys-block pre {
+    margin: 0;
+    border: none;
+    border-top: 1px solid #2a2a2a;
+    border-radius: 0;
+    background: #0e0e0e;
+    font-size: 11px;
+}
+
+/* Tint the summary label per kind */
+.sys-block.kind-system_reminder    .kind-label { color: #c97ec9; }
+.sys-block.kind-command_meta       .kind-label { color: #c9c97e; }
+.sys-block.kind-local_command      .kind-label { color: #c9c97e; }
+.sys-block.kind-continuation       .kind-label { color: #c97e7e; }
+.sys-block.kind-environment_context .kind-label { color: #7ec9c9; }
+.sys-block.kind-tool_use           .kind-label { color: #c9a87e; }
+.sys-block.kind-tool_use           { border-left-color: #c9a87e; }
+.sys-block.kind-tool_result        .kind-label { color: #a87ec9; }
+.sys-block.kind-tool_result        { border-left-color: #a87ec9; }
+.sys-block.kind-thinking           .kind-label { color: #7e8ec9; }
+.sys-block.kind-thinking           { border-left-color: #7e8ec9; }
+.sys-block.kind-top-level          .kind-label { color: #c97ec9; }
+.sys-block.kind-top-level          { border-left-color: #c97ec9; }
+.sys-block.kind-variant            .kind-label { color: #c97e7e; }
+
+.msg.sys-prompt {
+    border-left-color: #c97ec9;
+    background: #1f1820;
+}
+
+/* ---------------------------------------------------------------------------
+   Segmented control (Compact | Raw)
+   --------------------------------------------------------------------------- */
+.seg {
+    display: inline-flex;
+    border: 1px solid #444;
+    border-radius: 3px;
+    overflow: hidden;
+}
+.seg-btn {
+    padding: 5px 10px;
+    background: #333;
+    border: none;
+    border-right: 1px solid #444;
+    color: #e0e0e0;
+    font-size: 12px;
+    border-radius: 0;
+    cursor: pointer;
+}
+.seg-btn:last-child { border-right: none; }
+.seg-btn:hover { background: #3d3d3d; }
+.seg-btn.active {
+    background: #2d3a4a;
+    color: #7ea8c9;
+}
+
+#sysBtn.active {
+    background: #4a2d4a;
+    color: #c97ec9;
+}
+
+/* ---------------------------------------------------------------------------
+   System-prompts browser page
+   --------------------------------------------------------------------------- */
+.sys-list { display: flex; flex-direction: column; gap: 4px; }
+.sys-list .placeholder.small {
+    padding: 10px;
+    color: #666;
+    font-size: 11px;
+}
+
+.row.sys-row { grid-template-columns: 70px 50px 1fr auto; }
+.row.sys-row .method { background: #4a2d4a; color: #c97ec9; }
+
