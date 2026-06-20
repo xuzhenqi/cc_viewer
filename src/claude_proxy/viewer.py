@@ -33,12 +33,7 @@ def _summary(path: Path) -> dict | None:
     messages = body.get("messages") if isinstance(body, dict) else None
     msg_count = len(messages) if isinstance(messages, list) else None
 
-    headers = data.get("headers") or {}
-    session_id = None
-    for k, v in headers.items():
-        if k.lower() == "x-claude-code-session-id" and isinstance(v, str) and v.strip():
-            session_id = v.strip()
-            break
+    session_id = dump.get_header(data.get("headers"), "x-claude-code-session-id")
 
     return {
         "filename": path.name,

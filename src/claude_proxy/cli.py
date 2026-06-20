@@ -14,6 +14,14 @@ from .viewer import app as viewer_app
 cli = typer.Typer(add_completion=False, invoke_without_command=True)
 
 
+_DATA_DIR_OPTION = typer.Option(
+    dump.DATA_DIR,
+    "-d",
+    "--data-dir",
+    help="Directory to read/write captured request dumps.",
+)
+
+
 def _run(
     port: int = typer.Option(8002, "-p", "--port", help="Port to listen on."),
     host: str = typer.Option("127.0.0.1", "-h", "--host", help="Host to bind to."),
@@ -23,12 +31,7 @@ def _run(
         "--upstream",
         help="Upstream URL to forward requests to.",
     ),
-    data_dir: Path = typer.Option(
-        Path("data"),
-        "-d",
-        "--data-dir",
-        help="Directory to write captured request dumps to.",
-    ),
+    data_dir: Path = _DATA_DIR_OPTION,
     reload: bool = typer.Option(False, "--reload", help="Enable uvicorn autoreload (dev only)."),
 ):
     """Start the capture proxy."""
@@ -59,12 +62,7 @@ cli.command(name="run")(_run)
 def _view(
     port: int = typer.Option(8003, "-p", "--port", help="Port to listen on."),
     host: str = typer.Option("127.0.0.1", "-h", "--host", help="Host to bind to."),
-    data_dir: Path = typer.Option(
-        Path("data"),
-        "-d",
-        "--data-dir",
-        help="Directory to read captured request dumps from.",
-    ),
+    data_dir: Path = _DATA_DIR_OPTION,
     reload: bool = typer.Option(False, "--reload", help="Enable uvicorn autoreload (dev only)."),
 ):
     """Start the read-only viewer for captured requests."""

@@ -24,6 +24,20 @@ def configure_data_dir(path: str | Path) -> None:
     DATA_DIR = Path(path).resolve()
 
 
+def get_header(headers: dict | None, name: str) -> str | None:
+    """Case-insensitive header lookup; returns the stripped value if non-empty."""
+    if not headers:
+        return None
+    target = name.lower()
+    for k, v in headers.items():
+        if k.lower() != target or not isinstance(v, str):
+            continue
+        stripped = v.strip()
+        if stripped:
+            return stripped
+    return None
+
+
 def _redact_headers(headers: dict) -> dict:
     return {
         k: ("<redacted>" if k.lower() in SENSITIVE_HEADERS else v)

@@ -146,7 +146,7 @@ button:hover { background: #3d3d3d; }
     font-size: 10px;
     transition: transform 0.1s;
 }
-.session-header.collapsed .toggle { transform: rotate(-90deg); }
+.session-header:has(+ .session-children.collapsed) .toggle { transform: rotate(-90deg); }
 .session-header .session-label {
     font-family: monospace;
     color: #c9c97e;

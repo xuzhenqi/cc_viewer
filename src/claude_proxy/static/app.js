@@ -72,20 +72,18 @@ function renderList() {
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(it);
     }
-    const groupKeys = [...groups.keys()].sort((a, b) => {
-        if (a === NO_SESSION) return 1;
-        if (b === NO_SESSION) return -1;
-        return (groups.get(b)[0].ts || "").localeCompare(groups.get(a)[0].ts || "");
+    const groupKeys = [...groups.entries()].sort((a, b) => {
+        if (a[0] === NO_SESSION) return 1;
+        if (b[0] === NO_SESSION) return -1;
+        return (b[1][0].ts || "").localeCompare(a[1][0].ts || "");
     });
 
     const frag = document.createDocumentFragment();
-    for (const key of groupKeys) {
-        const items = groups.get(key);
+    for (const [key, items] of groupKeys) {
         const isCollapsed = collapsedSessions.has(key);
 
         const header = document.createElement("div");
-        header.className = "session-header" + (isCollapsed ? " collapsed" : "");
-        header.dataset.session = key;
+        header.className = "session-header";
         header.innerHTML = `
             <span class="toggle">▾</span>
             <span class="session-label" title="${esc(key)}">${esc(key)}</span>
@@ -94,12 +92,10 @@ function renderList() {
 
         const children = document.createElement("div");
         children.className = "session-children" + (isCollapsed ? " collapsed" : "");
-        children.dataset.session = key;
 
         header.addEventListener("click", (e) => {
             e.stopPropagation();
             const nowCollapsed = children.classList.toggle("collapsed");
-            header.classList.toggle("collapsed", nowCollapsed);
             if (nowCollapsed) collapsedSessions.add(key);
             else collapsedSessions.delete(key);
         });
@@ -127,7 +123,7 @@ function renderList() {
 
 async function loadDetail(filename) {
     selectedFile = filename;
-    document.querySelectorAll(".row").forEach(r => {
+    listEl.querySelectorAll(".row").forEach(r => {
         r.classList.toggle("selected", r.dataset.file === filename);
     });
     detailEl.innerHTML = '<div class="placeholder">Loading...</div>';
