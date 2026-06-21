@@ -10,7 +10,7 @@ import uvicorn
 
 from . import classify, dump
 from .server import app, state
-from .viewer import app as viewer_app, configure_systems_dir
+from .viewer import app as viewer_app, configure_prompts_dir, configure_systems_dir
 
 
 cli = typer.Typer(add_completion=False, invoke_without_command=True)
@@ -28,6 +28,13 @@ _SYSTEMS_DIR_OPTION = typer.Option(
     "-S",
     "--systems-dir",
     help="Directory to read/write per-session system-prompt aggregates.",
+)
+
+_PROMPTS_DIR_OPTION = typer.Option(
+    Path("prompts"),
+    "-P",
+    "--prompts-dir",
+    help="Directory containing the prompt catalog (one .md file per entry).",
 )
 
 
@@ -73,14 +80,17 @@ def _view(
     host: str = typer.Option("127.0.0.1", "-h", "--host", help="Host to bind to."),
     data_dir: Path = _DATA_DIR_OPTION,
     systems_dir: Path = _SYSTEMS_DIR_OPTION,
+    prompts_dir: Path = _PROMPTS_DIR_OPTION,
     reload: bool = typer.Option(False, "--reload", help="Enable uvicorn autoreload (dev only)."),
 ):
     """Start the read-only viewer for captured requests."""
     dump.configure_data_dir(data_dir)
     configure_systems_dir(systems_dir)
+    configure_prompts_dir(prompts_dir)
     typer.echo(f"Viewer listening on http://{host}:{port}")
     typer.echo(f"Reading dumps   from {data_dir}/")
     typer.echo(f"Reading systems from {systems_dir}/")
+    typer.echo(f"Reading prompts from {prompts_dir}/")
     uvicorn.run(viewer_app, host=host, port=port, log_level="warning", reload=reload)
 
 

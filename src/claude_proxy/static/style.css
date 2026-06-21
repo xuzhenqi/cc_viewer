@@ -409,6 +409,87 @@ table.headers td.v.redacted { color: #555; font-style: italic; }
     color: #c97ec9;
 }
 
+#catBtn.active {
+    background: #2d4a4a;
+    color: #7ec9c9;
+}
+
+/* ---------------------------------------------------------------------------
+   Prompt catalog
+   --------------------------------------------------------------------------- */
+.row.cat-row { grid-template-columns: 70px 50px 1fr auto; }
+.row.cat-row .method.CAT { background: #2d4a4a; color: #7ec9c9; }
+
+.cat-badge {
+    display: inline-block;
+    font-size: 11px;
+    padding: 2px 8px;
+    margin: 4px 8px;
+    border-radius: 3px;
+    background: #2d4a4a;
+    color: #7ec9c9;
+    font-family: monospace;
+    cursor: pointer;
+    user-select: none;
+}
+.cat-badge:hover { background: #3a5a5a; }
+.cat-badge.ghost {
+    background: transparent;
+    color: #888;
+    border: 1px dashed #444;
+    cursor: default;
+}
+
+.sys-prompt-block { display: block; }
+.sys-prompt-block.matched > pre { border-left: 2px solid #2d4a4a; }
+.sys-prompt-unmatched {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+}
+.sys-prompt-unmatched > pre { flex: 1; }
+.cat-add { white-space: nowrap; }
+
+.detail label {
+    display: block;
+    margin: 8px 0;
+    font-size: 11px;
+    color: #888;
+}
+.detail label > input,
+.detail label > textarea {
+    display: block;
+    width: 100%;
+    margin-top: 4px;
+    padding: 6px 8px;
+    background: #1a1a1a;
+    border: 1px solid #444;
+    border-radius: 3px;
+    color: #e0e0e0;
+    font-family: inherit;
+    font-size: 12px;
+}
+.detail label > textarea {
+    font-family: monospace;
+    min-height: 200px;
+    resize: vertical;
+}
+.cat-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+.cat-actions #catDelete,
+.cat-actions #catDelete + * { margin-left: 0; }
+.cat-actions #catDelete { margin-left: auto; background: #4a2d2d; color: #c97e7e; }
+.cat-hint { color: #666; font-size: 11px; font-style: italic; }
+
+/* Hide Compact/Raw seg and auto-refresh outside dumps mode */
+body[data-mode="systems"] .seg,
+body[data-mode="catalog"] .seg,
+body[data-mode="systems"] .auto-refresh,
+body[data-mode="catalog"] .auto-refresh { display: none; }
+
 /* ---------------------------------------------------------------------------
    System-prompts browser page
    --------------------------------------------------------------------------- */

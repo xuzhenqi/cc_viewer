@@ -11,16 +11,20 @@ const autoEl = document.getElementById("auto");
 const modeCompact = document.getElementById("modeCompact");
 const modeRaw = document.getElementById("modeRaw");
 const sysBtn = document.getElementById("sysBtn");
+const catBtn = document.getElementById("catBtn");
 
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
-let mode = "dumps";            // "dumps" | "systems"
+let mode = "dumps";            // "dumps" | "systems" | "catalog"
 let viewMode = "compact";      // "compact" | "raw"
 let allItems = [];
 let allSystems = [];
+let catalogEntries = [];       // [{hash, name, text, created_at, updated_at}]
+let catalogByHash = new Map(); // hash -> entry
 let selectedFile = null;
 let selectedSession = null;
+let selectedCatalogHash = null;
 let autoTimer = null;
 const collapsedSessions = new Set();
 const NO_SESSION = "(no session)";
@@ -144,26 +148,41 @@ function classifyMessage(msg) {
     return { role: (msg && msg.role) || "", blocks };
 }
 
-function splitSystemPrompt(systemField) {
-    const out = { billing: "", tagline: "", full: "", blocks: [] };
+// ---------------------------------------------------------------------------
+// Prompt catalog annotation
+// ---------------------------------------------------------------------------
+async function sha256Hex(str) {
+    const buf = new TextEncoder().encode(str);
+    const digest = await crypto.subtle.digest("SHA-256", buf);
+    return Array.from(new Uint8Array(digest))
+        .map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Cached sha256 promises so repeated annotation of the same string reuses work.
+const _hashCache = new Map();
+async function sha256HexCached(str) {
+    if (_hashCache.has(str)) return _hashCache.get(str);
+    const p = sha256Hex(str);
+    _hashCache.set(str, p);
+    return p;
+}
+
+async function annotateSystemPrompt(systemField, catalogByHash) {
+    // Normalize to array of strings (one per "unit"). A string field is one
+    // unit; an array of content blocks contributes each {type:"text"} element.
+    let texts = [];
     if (typeof systemField === "string") {
-        out.blocks.push(systemField);
-        out.full = systemField;
-        return out;
-    }
-    if (!Array.isArray(systemField)) return out;
-    for (const b of systemField) {
-        if (!b || b.type !== "text") continue;
-        const text = b.text || "";
-        out.blocks.push(text);
-        const stripped = text.replace(/^\s+/, "");
-        if (stripped.startsWith("x-anthropic-billing-header")) {
-            out.billing = text;
-        } else if (stripped.startsWith("You are Claude Code")) {
-            out.tagline = text;
-        } else {
-            out.full = text;
+        if (systemField) texts.push(systemField);
+    } else if (Array.isArray(systemField)) {
+        for (const b of systemField) {
+            if (b && b.type === "text" && b.text) texts.push(b.text);
         }
+    }
+    const out = [];
+    for (const text of texts) {
+        const hex = await sha256HexCached(text);
+        const hash = "sha256:" + hex;
+        out.push({ text, hash, entry: catalogByHash.get(hash) || null });
     }
     return out;
 }
@@ -195,25 +214,58 @@ function statsLabel(s) {
     return parts.join(" · ");
 }
 
-function renderSystemPromptPseudo(sys) {
+function renderSystemPromptPseudo(units, onAddToCatalog) {
     const det = document.createElement("details");
     det.className = "msg msg-system sys-prompt";
     det.open = false;
-    const parts = [];
-    if (sys.billing) parts.push("billing " + sys.billing.length + " chars");
-    if (sys.tagline) parts.push("tagline " + sys.tagline.length + " chars");
-    if (sys.full) parts.push("full " + sys.full.length + " chars");
+    const totalChars = units.reduce((s, u) => s + u.text.length, 0);
+    const matched = units.filter(u => u.entry).length;
     const summary = document.createElement("summary");
     summary.className = "msg-summary";
     summary.innerHTML =
         '<span class="role-badge role-system">system</span>' +
         '<span class="msg-idx">prompt</span>' +
-        '<span class="msg-stats">' + esc(parts.join(" · ") || "(empty)") + '</span>';
+        '<span class="msg-stats">' + esc(
+            units.length + " block" + (units.length === 1 ? "" : "s") +
+            " · " + matched + " named · " + totalChars + " chars") + '</span>';
     det.appendChild(summary);
-    for (const block of sys.blocks) {
-        const pre = document.createElement("pre");
-        pre.textContent = block;
-        det.appendChild(pre);
+    for (const u of units) {
+        const wrap = document.createElement("div");
+        wrap.className = "sys-prompt-block" + (u.entry ? " matched" : " unmatched");
+        const badge = document.createElement("span");
+        badge.className = "cat-badge" + (u.entry ? "" : " ghost");
+        badge.textContent = u.entry ? u.entry.name : "unnamed";
+        if (u.entry) {
+            badge.title = u.entry.hash;
+            badge.addEventListener("click", async (e) => {
+                e.stopPropagation();
+                setMode("catalog");
+                await loadCatalogList();
+                loadCatalogEntry(u.entry.hash);
+            });
+        }
+        wrap.appendChild(badge);
+        if (u.entry) {
+            const pre = document.createElement("pre");
+            pre.textContent = u.text;
+            wrap.appendChild(pre);
+        } else {
+            const preview = document.createElement("div");
+            preview.className = "sys-prompt-unmatched";
+            const pre = document.createElement("pre");
+            pre.textContent = u.text;
+            preview.appendChild(pre);
+            const addBtn = document.createElement("button");
+            addBtn.className = "button cat-add";
+            addBtn.textContent = "Add to catalog";
+            addBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                onAddToCatalog(u);
+            });
+            preview.appendChild(addBtn);
+            wrap.appendChild(preview);
+        }
+        det.appendChild(wrap);
     }
     return det;
 }
@@ -351,13 +403,13 @@ function renderGeneric(b) {
     return pre;
 }
 
-function renderMessagesCompact(body) {
+async function renderMessagesCompact(body, catalogByHash, onAddToCatalog) {
     const root = document.createElement("div");
     root.className = "messages";
 
-    const sys = splitSystemPrompt(body && body.system);
-    if (sys.billing || sys.tagline || sys.full) {
-        root.appendChild(renderSystemPromptPseudo(sys));
+    const units = await annotateSystemPrompt(body && body.system, catalogByHash);
+    if (units.length) {
+        root.appendChild(renderSystemPromptPseudo(units, onAddToCatalog));
     }
 
     const messages = (body && Array.isArray(body.messages)) ? body.messages : [];
@@ -479,19 +531,38 @@ async function loadDetail(filename) {
     });
     detailEl.innerHTML = '<div class="placeholder">Loading...</div>';
     try {
+        // Refresh the catalog cache before rendering so system-prompt names
+        // show up even if the user hasn't visited catalog mode yet (or edits
+        // happened in another tab).
+        await fetchCatalogIfStale();
         const r = await fetch("/api/requests/" + encodeURIComponent(filename));
         if (!r.ok) {
             detailEl.innerHTML = `<div class="placeholder">Error ${r.status}: ${esc(await r.text())}</div>`;
             return;
         }
         const data = await r.json();
-        renderDetail(data);
+        await renderDetail(data);
     } catch (e) {
         detailEl.innerHTML = `<div class="placeholder">Failed: ${esc(String(e))}</div>`;
     }
 }
 
-function renderDetail(d) {
+let _catalogLastFetchedAt = 0;
+async function fetchCatalogIfStale(maxAgeMs = 30000) {
+    if (Date.now() - _catalogLastFetchedAt < maxAgeMs) return;
+    try {
+        const r = await fetch("/api/catalog/entries");
+        if (!r.ok) return;
+        const data = await r.json();
+        catalogEntries = data.entries || [];
+        catalogByHash = new Map(catalogEntries.map(e => [e.hash, e]));
+        _catalogLastFetchedAt = Date.now();
+    } catch (e) {
+        // Ignore — we'll just render without names this round.
+    }
+}
+
+async function renderDetail(d) {
     const body = d.body;
 
     const headers = d.headers || {};
@@ -527,10 +598,216 @@ function renderDetail(d) {
         pre.textContent = `binary, ${d.body_bytes_len ?? "?"} bytes (base64 in source file)`;
         bodyArea.appendChild(pre);
     } else if (viewMode === "compact") {
-        bodyArea.appendChild(renderMessagesCompact(body));
+        const onAddToCatalog = (u) => {
+            const suggested = (u.text.split("\n", 1)[0] || "")
+                .slice(0, 40).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "prompt";
+            setMode("catalog");
+            showCatalogNewForm(u.text, suggested);
+        };
+        const compact = await renderMessagesCompact(body, catalogByHash, onAddToCatalog);
+        bodyArea.appendChild(compact);
     } else {
         bodyArea.appendChild(renderMessagesRaw(body));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Prompt catalog list + detail
+// ---------------------------------------------------------------------------
+async function loadCatalogList() {
+    try {
+        const r = await fetch("/api/catalog/entries");
+        if (!r.ok) {
+            console.error("catalog list failed", r.status);
+            catalogEntries = [];
+        } else {
+            const data = await r.json();
+            catalogEntries = data.entries || [];
+        }
+    } catch (e) {
+        console.error("catalog list failed", e);
+        catalogEntries = [];
+    }
+    catalogByHash = new Map(catalogEntries.map(e => [e.hash, e]));
+    renderCatalogList();
+}
+
+function renderCatalogList() {
+    if (catalogEntries.length === 0) {
+        listEl.innerHTML = "";
+        emptyEl.textContent = "No catalog entries yet. Click '+ New' to add one, or open a captured request and click 'Add to catalog' on an unmatched system block.";
+        listEl.appendChild(emptyEl);
+        emptyEl.style.display = "block";
+        return;
+    }
+    emptyEl.style.display = "none";
+    const sorted = [...catalogEntries].sort((a, b) =>
+        (b.updated_at || "").localeCompare(a.updated_at || "")
+    );
+    const frag = document.createDocumentFragment();
+    for (const e of sorted) {
+        const row = document.createElement("div");
+        row.className = "row cat-row" + (e.hash === selectedCatalogHash ? " selected" : "");
+        row.dataset.hash = e.hash;
+        const short = e.hash.slice(7, 15); // skip "sha256:"
+        row.innerHTML = `
+            <span class="n">${esc(short)}</span>
+            <span class="method CAT">CAT</span>
+            <span class="path" title="${esc(e.text.slice(0, 200))}">${esc(e.name)}</span>
+            <span class="meta">${esc(String(e.text.length))}c · ${esc(fmtTime(e.updated_at))}</span>
+        `;
+        row.addEventListener("click", () => loadCatalogEntry(e.hash));
+        frag.appendChild(row);
+    }
+    listEl.innerHTML = "";
+    listEl.appendChild(frag);
+}
+
+function _upsertCatalogEntry(entry) {
+    const existing = catalogByHash.get(entry.hash);
+    if (existing && existing.name !== entry.name) {
+        // Name change: remove the entry under the old hash key (same hash, new name).
+        // Since hash is the key, the entry just gets replaced in the Map; the
+        // unique-name check on the server side guarantees no collisions.
+        catalogByHash.delete(entry.hash);
+    }
+    catalogByHash.set(entry.hash, entry);
+    const idx = catalogEntries.findIndex(e => e.hash === entry.hash);
+    if (idx >= 0) catalogEntries[idx] = entry;
+    else catalogEntries.push(entry);
+}
+
+function _removeCatalogEntry(hash) {
+    catalogByHash.delete(hash);
+    catalogEntries = catalogEntries.filter(e => e.hash !== hash);
+}
+
+function loadCatalogEntry(hash) {
+    selectedCatalogHash = hash;
+    listEl.querySelectorAll(".cat-row").forEach(r => {
+        r.classList.toggle("selected", r.dataset.hash === hash);
+    });
+    const entry = catalogByHash.get(hash);
+    if (!entry) {
+        detailEl.innerHTML = '<div class="placeholder">Entry not found in cache — click Refresh.</div>';
+        return;
+    }
+    renderCatalogDetail(entry);
+}
+
+function renderCatalogDetail(entry) {
+    detailEl.innerHTML = `
+        <h2>Catalog Entry</h2>
+        <div class="meta-grid">
+            <span class="k">hash</span><span class="v mono">${esc(entry.hash)}</span>
+            <span class="k">created</span><span class="v">${esc(entry.created_at)}</span>
+            <span class="k">updated</span><span class="v">${esc(entry.updated_at)}</span>
+        </div>
+        <label>Name <input id="catName" type="text" maxlength="64" value="${esc(entry.name)}"></label>
+        <label>Text <textarea id="catText" readonly title="Text is immutable. To change it, delete and re-add."></textarea></label>
+        <div class="cat-actions">
+            <button id="catSave" class="button">Save</button>
+            <button id="catCancel" class="button">Cancel</button>
+            <button id="catDelete" class="button">Delete</button>
+        </div>
+        <p class="cat-hint">Text is hashed to identify the entry; rename only.</p>
+    `;
+    document.getElementById("catText").value = entry.text;
+
+    document.getElementById("catSave").addEventListener("click", async () => {
+        const newName = document.getElementById("catName").value.trim();
+        if (!newName || newName === entry.name) return;
+        const btn = document.getElementById("catSave");
+        btn.disabled = true;
+        try {
+            const r = await fetch("/api/catalog/entries/" + encodeURIComponent(entry.hash), {
+                method: "PUT",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ name: newName, text: entry.text }),
+            });
+            if (!r.ok) {
+                const err = await r.json().catch(() => ({ detail: r.statusText }));
+                alert("Save failed: " + JSON.stringify(err.detail || err));
+                return;
+            }
+            const updated = await r.json();
+            _upsertCatalogEntry(updated);
+            renderCatalogList();
+            loadCatalogEntry(updated.hash);
+        } finally {
+            btn.disabled = false;
+        }
+    });
+
+    document.getElementById("catCancel").addEventListener("click", () => {
+        loadCatalogEntry(entry.hash);
+    });
+
+    document.getElementById("catDelete").addEventListener("click", async () => {
+        if (!confirm(`Delete "${entry.name}"?`)) return;
+        const r = await fetch("/api/catalog/entries/" + encodeURIComponent(entry.hash), { method: "DELETE" });
+        if (!r.ok) {
+            alert("Delete failed: " + r.status);
+            return;
+        }
+        _removeCatalogEntry(entry.hash);
+        selectedCatalogHash = null;
+        renderCatalogList();
+        detailEl.innerHTML = '<div class="placeholder">Select a prompt to view or edit it.</div>';
+    });
+}
+
+function showCatalogNewForm(text, suggestedName) {
+    selectedCatalogHash = null;
+    listEl.querySelectorAll(".cat-row").forEach(r => r.classList.remove("selected"));
+    detailEl.innerHTML = `
+        <h2>New Catalog Entry</h2>
+        <label>Name <input id="catName" type="text" maxlength="64" value="${esc(suggestedName)}"></label>
+        <label>Text <textarea id="catText" readonly></textarea></label>
+        <div class="cat-actions">
+            <button id="catCreate" class="button">Create</button>
+            <button id="catCancel" class="button">Cancel</button>
+        </div>
+        <p class="cat-hint">Pick a short, descriptive name. The text is hashed to identify the entry.</p>
+    `;
+    document.getElementById("catText").value = text;
+
+    document.getElementById("catCreate").addEventListener("click", async () => {
+        const name = document.getElementById("catName").value.trim();
+        if (!name) return;
+        const btn = document.getElementById("catCreate");
+        btn.disabled = true;
+        try {
+            const r = await fetch("/api/catalog/entries", {
+                method: "POST",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ name, text }),
+            });
+            if (r.status === 409) {
+                const err = await r.json().catch(() => ({ detail: r.statusText }));
+                alert("Already cataloged: " + JSON.stringify(err.detail));
+                return;
+            }
+            if (!r.ok) {
+                alert("Create failed: " + r.status);
+                return;
+            }
+            const entry = await r.json();
+            _upsertCatalogEntry(entry);
+            renderCatalogList();
+            loadCatalogEntry(entry.hash);
+        } finally {
+            btn.disabled = false;
+        }
+    });
+
+    document.getElementById("catCancel").addEventListener("click", () => {
+        if (catalogEntries.length > 0) {
+            loadCatalogList(); // refresh and select first
+        } else {
+            detailEl.innerHTML = '<div class="placeholder">Select a prompt to view or edit it.</div>';
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -710,17 +987,22 @@ function renderVariantList(target, items) {
 function setMode(newMode) {
     if (newMode === mode) return;
     mode = newMode;
+    document.body.dataset.mode = mode;
+    sysBtn.classList.toggle("active", mode === "systems");
+    catBtn.classList.toggle("active", mode === "catalog");
+    searchEl.disabled = (mode !== "dumps");
+    searchEl.value = "";
+    clearInterval(autoTimer);
+    autoTimer = null;
+
     if (mode === "systems") {
-        sysBtn.classList.add("active");
-        clearInterval(autoTimer);
-        autoTimer = null;
         loadSystems();
         detailEl.innerHTML = '<div class="placeholder">Select a session to view extracted system prompts.</div>';
-    } else {
-        sysBtn.classList.remove("active");
-        if (autoEl.checked) {
-            autoTimer = setInterval(loadList, 5000);
-        }
+    } else if (mode === "catalog") {
+        loadCatalogList();
+        detailEl.innerHTML = '<div class="placeholder">Select a prompt to view or edit it.</div>';
+    } else { // dumps
+        if (autoEl.checked) autoTimer = setInterval(loadList, 5000);
         loadList();
         if (selectedFile) {
             loadDetail(selectedFile);
@@ -746,7 +1028,8 @@ function setViewMode(newMode) {
 // ---------------------------------------------------------------------------
 refreshBtn.addEventListener("click", () => {
     if (mode === "dumps") loadList();
-    else loadSystems();
+    else if (mode === "systems") loadSystems();
+    else loadCatalogList();
 });
 searchEl.addEventListener("input", renderList);
 autoEl.addEventListener("change", () => {
@@ -760,5 +1043,7 @@ autoEl.addEventListener("change", () => {
 modeCompact.addEventListener("click", () => setViewMode("compact"));
 modeRaw.addEventListener("click", () => setViewMode("raw"));
 sysBtn.addEventListener("click", () => setMode(mode === "systems" ? "dumps" : "systems"));
+catBtn.addEventListener("click", () => setMode(mode === "catalog" ? "dumps" : "catalog"));
 
+document.body.dataset.mode = mode;
 loadList();
