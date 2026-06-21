@@ -92,3 +92,20 @@ viewer.py  ──read JSON──▶  data/   (separate process, separate port)
 ```
 
 The two processes are decoupled: the proxy never knows the viewer exists, and the viewer can be started/stopped/restarted at any time without affecting capture.
+
+## Rules
+
+* **Always run `git commit` after finishing a job — do not wait to be
+  asked.** Every completed change (new section, refactor, bug fix, test)
+  must be committed before the turn ends. Stage the specific files
+  changed (prefer `git add <path>` over `git add -A` / `git add .`) and
+  write a message that explains the *why*, not the *what*. If there is
+  nothing to commit, say so explicitly rather than skipping silently.
+
+## Code Maintainability
+
+Keep the codebase small and avoid reinventing well-trodden code paths.
+
+* **Prefer mature dependencies over hand-rolled implementations.** When
+  stdlib or an already-declared third-party dependency provides the
+  behaviour, use it instead of reimplementing inline.

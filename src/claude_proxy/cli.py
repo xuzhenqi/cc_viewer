@@ -9,6 +9,7 @@ import typer
 import uvicorn
 
 from . import classify, dump
+from .prompts import existing_hashes, hash_text, write_prompt
 from .server import app, state
 from .viewer import app as viewer_app, configure_prompts_dir, configure_systems_dir
 
@@ -149,8 +150,89 @@ def _extract_system(
     typer.echo("")
     typer.echo(f"Wrote {written} session file(s) to {dst}/")
 
+    # Also build the prompts/ catalog: hash each text block in the LAST
+    # request of every session; write any text that appears in >1 distinct
+    # session. Within a session we dedupe identical text blocks (the last
+    # request is append-only, so prior occurrences are already contained in
+    # it) and skip any hash already present in prompts/ (e.g. seed entries).
+    prompts_dir = Path("prompts")
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+    configure_prompts_dir(prompts_dir)
+    written_prompts = _extract_repeated_prompts(by_session, prompts_dir)
+
+    if written_prompts:
+        typer.echo("")
+        typer.echo(f"Wrote {len(written_prompts)} prompt(s) to {prompts_dir}/")
+        for path, h, count in written_prompts:
+            typer.echo(f"  {h[:23]}  {count:>3} sessions  {path.name}")
+    else:
+        typer.echo("")
+        typer.echo(f"No repeated prompts found across sessions; {prompts_dir}/ unchanged.")
+
 
 cli.command(name="extract-system")(_extract_system)
+
+
+def _extract_repeated_prompts(
+    by_session: dict[str, list[Path]],
+    prompts_dir: Path,
+) -> list[tuple[Path, str, int]]:
+    """Hash every text block in the last request of each session; collect
+    hashes that appeared in >1 distinct session; write each as a prompt
+    catalog entry. Returns [(path, hash, session_count), ...] sorted by
+    (-session_count, hash)."""
+    buckets: dict[str, dict] = {}  # hash -> {"text": str, "sessions": set[str]}
+
+    for sid, paths in by_session.items():
+        if not paths:
+            continue
+        # Filenames sort by counter + timestamp, so max-by-name == last request.
+        last_path = max(paths, key=lambda p: p.name)
+        try:
+            data = json.loads(last_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        body = data.get("body") or {}
+        messages = body.get("messages") or []
+        seen: set[str] = set()  # dedupe text repeats inside the last request
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            content = msg.get("content")
+            if isinstance(content, str):
+                blocks = [{"type": "text", "text": content}]
+            elif isinstance(content, list):
+                blocks = [b for b in content if isinstance(b, dict)]
+            else:
+                continue
+            for block in blocks:
+                if block.get("type") != "text":
+                    continue
+                text = (block.get("text") or "").strip()
+                if not text:
+                    continue
+                h = hash_text(text)
+                if h in seen:
+                    continue
+                seen.add(h)
+                bucket = buckets.setdefault(h, {"text": text, "sessions": set()})
+                bucket["sessions"].add(sid)
+
+    existing = existing_hashes(prompts_dir)
+    written: list[tuple[Path, str, int]] = []
+    for h, bucket in sorted(
+        buckets.items(),
+        key=lambda kv: (-len(kv[1]["sessions"]), kv[0]),
+    ):
+        if len(bucket["sessions"]) <= 1:
+            continue
+        result = write_prompt(prompts_dir, bucket["text"], existing=existing)
+        if result is None:
+            continue
+        path, written_hash = result
+        existing.add(written_hash)
+        written.append((path, written_hash, len(bucket["sessions"])))
+    return written
 
 
 if __name__ == "__main__":
