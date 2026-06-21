@@ -218,3 +218,80 @@ def write_prompt(
     path = directory / f"{slug}.md"
     atomic_write(path, render_markdown(entry), tmp_dir=directory)
     return path, text_hash
+
+
+def migrate_seed_prompts(directory: Path) -> int:
+    """Rewrite bare .md files in `directory` to use the YAML-frontmatter format.
+
+    A "bare" file is one whose content does not start with `---\\n`. Such files
+    predate the catalog format and have no frontmatter, so `parse_markdown`
+    would silently drop them. This rewrites them in place:
+
+    - The body (raw text, stripped) becomes the prompt `text`.
+    - The stem becomes the slug, *if* it matches `CATALOG_NAME_RE`; otherwise
+      `derive_slug` picks a slug from the body.
+    - The original `mtime` is preserved via `os.utime` so downstream consumers
+      that key on mtime are unaffected.
+
+    Returns the number of files rewritten. Idempotent: a file that already has
+    frontmatter is a no-op.
+    """
+    if not directory.exists():
+        return 0
+    rewritten = 0
+    already_hashes = existing_hashes(directory)
+    for path in sorted(directory.glob("*.md")):
+        if not path.is_file():
+            continue
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except OSError as e:
+            print(f"[catalog] skip {path.name}: read failed ({e})", file=sys.stderr)
+            continue
+        if raw.startswith("---"):
+            continue
+        text = raw.strip()
+        if not text:
+            continue
+        text_hash = hash_text(text)
+        if text_hash in already_hashes:
+            # A catalog entry with the same body already exists elsewhere; do
+            # not overwrite the bare file (its name may carry meaning), just
+            # leave it. A future re-run will still see it as bare and skip it.
+            print(
+                f"[catalog] skip {path.name}: body already catalogued as {text_hash[:15]}…",
+                file=sys.stderr,
+            )
+            continue
+        stem = path.stem
+        if CATALOG_NAME_RE.match(stem):
+            slug = stem
+        else:
+            slug = derive_slug(text, directory, text_hash.split(":", 1)[1])
+        try:
+            stat = path.stat()
+        except OSError:
+            mtime = None
+        else:
+            mtime = stat.st_mtime
+        now = _now_iso()
+        try:
+            entry = CatalogEntry(
+                hash=text_hash,
+                name=slug,
+                text=text,
+                created_at=now,
+                updated_at=now,
+            )
+            atomic_write(path, render_markdown(entry), tmp_dir=directory)
+        except Exception as e:
+            print(f"[catalog] skip {path.name}: rewrite failed ({e})", file=sys.stderr)
+            continue
+        if mtime is not None:
+            try:
+                os.utime(path, (mtime, mtime))
+            except OSError:
+                pass
+        already_hashes.add(text_hash)
+        rewritten += 1
+    return rewritten

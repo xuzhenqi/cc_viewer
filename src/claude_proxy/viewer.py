@@ -144,6 +144,71 @@ def _summary(path: Path) -> dict | None:
 app = FastAPI(title="Claude Capture Viewer")
 
 
+# Cap on referenced_in list size returned by /api/prompts/{name}. The list
+# is a UI affordance ("which requests contained this prompt?"), not an
+# index — full enumeration over data/ would be unbounded.
+_REFERENCED_IN_CAP = 200
+
+
+def _extract_system_texts(body: dict) -> list[str]:
+    """Return the list of prompt-text blocks in `body.system`.
+
+    `body.system` is either a single string, or a list of content blocks.
+    We keep only `{type: "text", text: "…"}` entries (the other Anthropic
+    block types don't carry prompt prose). Empty strings are dropped.
+    """
+    out: list[str] = []
+    sys = body.get("system") if isinstance(body, dict) else None
+    if isinstance(sys, str):
+        if sys:
+            out.append(sys)
+        return out
+    if not isinstance(sys, list):
+        return out
+    for b in sys:
+        if not isinstance(b, dict):
+            continue
+        if b.get("type") == "text":
+            t = b.get("text")
+            if isinstance(t, str) and t:
+                out.append(t)
+    return out
+
+
+def _find_referenced_in(target_hash: str, *, cap: int = _REFERENCED_IN_CAP) -> list[dict]:
+    """Walk data/req-*.json newest-first; for every request, hash each text
+    block in `body.system` and emit a `{filename, ts, session_id}` record
+    when its hash matches `target_hash`. Returns at most `cap` entries.
+
+    Stop scanning once we have `cap` matches AND the remaining files are
+    older than the oldest we already returned; this trades a small amount
+    of completeness for predictable latency on large data dirs.
+    """
+    if not dump.DATA_DIR.exists():
+        return []
+    out: list[dict] = []
+    files = sorted(dump.DATA_DIR.glob("req-*.json"), reverse=True)
+    for path in files:
+        try:
+            data = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        body = data.get("body") or {}
+        for text in _extract_system_texts(body):
+            if hash_text(text) == target_hash:
+                out.append({
+                    "filename": path.name,
+                    "ts": data.get("ts"),
+                    "session_id": dump.get_header(
+                        data.get("headers"), "x-claude-code-session-id"
+                    ),
+                })
+                break  # one match per dump is enough
+        if len(out) >= cap:
+            break
+    return out
+
+
 @app.get("/api/requests")
 async def list_requests() -> dict:
     if not dump.DATA_DIR.exists():
@@ -302,6 +367,42 @@ def delete_catalog_entry(hash: str) -> dict:
 
 @app.get("/")
 async def index() -> FileResponse:
+    return FileResponse(STATIC_DIR / "index.html")
+
+
+# --- Prompt-by-name lookup ------------------------------------------------
+#
+# The catalog API is keyed by hash (immutable identity). But the user-facing
+# /prompts/<name> URL is keyed by name. This endpoint resolves a name to a
+# single entry and bundles a "referenced in" list so the prompt page can
+# show where the prompt has been used.
+
+
+@app.get("/api/prompts/{name}")
+async def get_prompt_by_name(name: str) -> dict:
+    if not CATALOG_NAME_RE.match(name):
+        raise HTTPException(status_code=400, detail="invalid name")
+    catalog = _load_catalog()
+    for entry in catalog.values():
+        if entry.name == name:
+            referenced = _find_referenced_in(entry.hash)
+            payload = entry.model_dump()
+            payload["referenced_in"] = referenced
+            payload["referenced_in_truncated"] = len(referenced) >= _REFERENCED_IN_CAP
+            return payload
+    raise HTTPException(status_code=404, detail="not found")
+
+
+@app.get("/prompts/{name}")
+async def prompt_page(name: str) -> FileResponse:
+    """Serve the SPA shell at /prompts/<name> for deep-link / reload.
+
+    The SPA reads `location.pathname` and dispatches to the prompt view.
+    We don't validate the name here — invalid names render a 404 inline.
+    The `name` arg is required by FastAPI's path-param machinery; it is
+    intentionally unused server-side.
+    """
+    del name  # consumed by the URL; the SPA handles the lookup
     return FileResponse(STATIC_DIR / "index.html")
 
 

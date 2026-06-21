@@ -16,8 +16,9 @@ const catBtn = document.getElementById("catBtn");
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
-let mode = "dumps";            // "dumps" | "systems" | "catalog"
+let mode = "dumps";            // "dumps" | "systems" | "catalog" | "prompt"
 let viewMode = "compact";      // "compact" | "raw"
+let promptName = null;         // current prompt name when mode === "prompt"
 let allItems = [];
 let allSystems = [];
 let catalogEntries = [];       // [{hash, name, text, created_at, updated_at}]
@@ -237,11 +238,11 @@ function renderSystemPromptPseudo(units, onAddToCatalog) {
         badge.textContent = u.entry ? u.entry.name : "unnamed";
         if (u.entry) {
             badge.title = u.entry.hash;
-            badge.addEventListener("click", async (e) => {
+            badge.addEventListener("click", (e) => {
                 e.stopPropagation();
-                setMode("catalog");
-                await loadCatalogList();
-                loadCatalogEntry(u.entry.hash);
+                // Deep-link to the prompt page; the SPA router will load
+                // the prompt view and push the URL.
+                navigateToPrompt(u.entry.name);
             });
         }
         wrap.appendChild(badge);
@@ -886,6 +887,7 @@ function renderSession(s) {
             <span class="k">requests</span><span class="v">${esc(String(s.request_count ?? 0))}</span>
             <span class="k">first</span><span class="v">${esc(s.first_ts || "")}</span>
             <span class="k">last</span><span class="v">${esc(s.last_ts || "")}</span>
+            <span class="k">last request</span><span class="v mono">${esc(s.last_request_filename || "—")}</span>
         </div>
 
         <h2>Summary</h2>
@@ -896,10 +898,8 @@ function renderSession(s) {
             <span class="k">assistant turns</span><span class="v">${esc(String(sum.assistant_turns ?? 0))}</span>
             <span class="k">tool_use messages</span><span class="v">${esc(String(sum.tool_use_messages ?? 0))}</span>
             <span class="k">tool_result messages</span><span class="v">${esc(String(sum.tool_result_messages ?? 0))}</span>
-            <span class="k">distinct full prompts</span><span class="v">${esc(String(sum.distinct_full_prompts ?? 0))}</span>
-            <span class="k">distinct billing headers</span><span class="v">${esc(String(sum.distinct_billing_headers ?? 0))}</span>
-            <span class="k">distinct reminders</span><span class="v">${esc(String(sum.distinct_system_reminders ?? 0))}</span>
-            <span class="k">distinct commands</span><span class="v">${esc(String(sum.distinct_commands ?? 0))}</span>
+            <span class="k">top-level blocks</span><span class="v">${esc(String(sum.top_level_blocks ?? 0))}</span>
+            <span class="k">in-message blocks</span><span class="v">${esc(String(sum.in_message_blocks ?? 0))}</span>
         </div>
 
         <h2>Top-level system prompts</h2>
@@ -916,9 +916,6 @@ function renderSession(s) {
 
         <h2>Environments</h2>
         <div id="envList" class="sys-list"></div>
-
-        <h2>Filenames (${(s.filenames || []).length})</h2>
-        <pre>${esc((s.filenames || []).join("\n"))}</pre>
     `;
 
     renderTopLevelList(document.getElementById("topLevelList"), s.top_level_system || []);
@@ -926,6 +923,87 @@ function renderSession(s) {
     renderVariantList(document.getElementById("commandList"), s.in_message_systems && s.in_message_systems.commands || []);
     renderVariantList(document.getElementById("continuationList"), s.in_message_systems && s.in_message_systems.continuations || []);
     renderVariantList(document.getElementById("envList"), s.in_message_systems && s.in_message_systems.environments || []);
+
+    // Delegated click handler for source_filename links: open the dump in
+    // dumps mode. Done at the end so it covers the entire session detail.
+    detailEl.querySelectorAll("a.source-link").forEach(a => {
+        a.addEventListener("click", (e) => {
+            e.preventDefault();
+            const file = a.dataset.file;
+            if (!file) return;
+            history.pushState({}, "", "/");
+            setMode("dumps");
+            selectedFile = file;
+            loadList().then(() => loadDetail(file));
+        });
+    });
+}
+
+// Helper: build a clickable "open this dump" link. Used in summary lines.
+function _sourceLink(filename) {
+    if (!filename) return "—";
+    return `<a class="source-link" data-file="${esc(filename)}" href="#">${esc(filename)}</a>`;
+}
+
+// Build a single block row used by both renderTopLevelList and renderVariantList.
+// - `label` is the kind label shown in the summary ("billing" / "full" / kind)
+// - `meta` is the right-aligned metadata string ("req-…json #5")
+// - `text` is the raw text; undefined when the block is fully represented
+//   by a catalog_match.
+// - `catalog_match` is {name, hash, ratio} when present.
+function _appendBlockRow(det, { label, meta, text, catalog_match }) {
+    if (catalog_match) {
+        const ratioPct = Math.round((catalog_match.ratio || 0) * 100);
+        const link = document.createElement("span");
+        link.className = "prompt-link";
+        link.textContent = catalog_match.name;
+        link.title = `sha256: ${catalog_match.hash} · ${ratioPct}% match`;
+        link.addEventListener("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            navigateToPrompt(catalog_match.name);
+        });
+        det.appendChild(link);
+        const ratio = document.createElement("span");
+        ratio.className = "match-ratio";
+        ratio.textContent = `${ratioPct}%`;
+        det.appendChild(ratio);
+        return;
+    }
+    // No catalog match — show the raw text inline (per the user's plan: the
+    // text is in the systems JSON for unmatched blocks so the user can
+    // still see what was sent).
+    if (typeof text === "string" && text) {
+        const pre = document.createElement("pre");
+        pre.className = "sys-block-text";
+        pre.textContent = text;
+        det.appendChild(pre);
+        const addBtn = document.createElement("button");
+        addBtn.className = "button cat-add";
+        addBtn.textContent = "Add to catalog";
+        addBtn.addEventListener("click", (e) => {
+            e.stopPropagation();
+            _onAddToCatalogText(text);
+        });
+        det.appendChild(addBtn);
+    }
+}
+
+// Frontend side of the "Add to catalog" flow (mirrors the dumps-mode handler).
+function _onAddToCatalogText(text) {
+    const suggested = (text.split("\n", 1)[0] || "")
+        .slice(0, 40).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "prompt";
+    history.pushState({}, "", "/catalog");
+    setMode("catalog");
+    // Make sure the catalog map is fresh, then open the new-entry form.
+    fetch("/api/catalog/entries")
+        .then(r => r.json())
+        .then(data => {
+            catalogEntries = data.entries || [];
+            catalogByHash = new Map(catalogEntries.map(e => [e.hash, e]));
+        })
+        .catch(() => {})
+        .finally(() => showCatalogNewForm(text, suggested));
 }
 
 function renderTopLevelList(target, items) {
@@ -939,18 +1017,17 @@ function renderTopLevelList(target, items) {
         det.className = "sys-block kind-top-level";
         det.open = false;
         const summary = document.createElement("summary");
-        const extras = v.distinct_count ? " · " + v.distinct_count + " distinct hashes" : "";
         summary.innerHTML =
-            '<span class="kind-label">' + esc(v.kind) + '</span>' +
-            '<span class="kind-preview">' + esc(v.length) + " chars · first=" +
-            esc(v.first_filename) + esc(extras) + '</span>';
+            '<span class="kind-label">' + esc(v.kind || "block") + '</span>' +
+            '<span class="kind-meta">' + esc(v.length || 0) + " chars · " +
+            _sourceLink(v.source_filename) + '</span>';
         det.appendChild(summary);
-        const pre = document.createElement("pre");
-        const txt = v.preview || "";
-        pre.textContent = txt.length >= 200
-            ? txt + "\n\n[... preview truncated; full text is in the source dump file]"
-            : txt;
-        det.appendChild(pre);
+        _appendBlockRow(det, {
+            label: v.kind,
+            meta: v.source_filename,
+            text: v.text,
+            catalog_match: v.catalog_match,
+        });
         target.appendChild(det);
     }
 }
@@ -967,16 +1044,16 @@ function renderVariantList(target, items) {
         det.open = false;
         const summary = document.createElement("summary");
         summary.innerHTML =
-            '<span class="kind-count">×' + esc(String(v.count)) + '</span>' +
-            '<span class="kind-preview">' + esc(preview(v.preview, 100)) + '</span>' +
-            '<span class="kind-meta">' + esc(v.first_filename) + ' #' + esc(String(v.first_msg_index)) + '</span>';
+            '<span class="kind-preview">' + esc(preview(v.text || "", 100) || "—") + '</span>' +
+            '<span class="kind-meta">' + esc(v.length || 0) + " chars · " +
+            _sourceLink(v.source_filename) + ' #' + esc(String(v.source_msg_index ?? "?")) + '</span>';
         det.appendChild(summary);
-        const samples = v.samples || [];
-        for (const s of samples) {
-            const pre = document.createElement("pre");
-            pre.textContent = s.length > 800 ? s.slice(0, 800) + "\n\n[... truncated]" : s;
-            det.appendChild(pre);
-        }
+        _appendBlockRow(det, {
+            label: "block",
+            meta: `${v.source_filename} #${v.source_msg_index}`,
+            text: v.text,
+            catalog_match: v.catalog_match,
+        });
         target.appendChild(det);
     }
 }
@@ -1024,11 +1101,176 @@ function setViewMode(newMode) {
 }
 
 // ---------------------------------------------------------------------------
+// SPA routing (URL <-> mode). Minimal: handles /prompts/<name> as a real
+// page; /, /systems, /catalog are stable URLs the topbar buttons can push.
+// ---------------------------------------------------------------------------
+
+function _pathForMode(m, name) {
+    if (m === "prompt") return name ? "/prompts/" + encodeURIComponent(name) : "/";
+    if (m === "systems") return "/systems";
+    if (m === "catalog") return "/catalog";
+    return "/";
+}
+
+function parseRoute() {
+    const path = location.pathname.replace(/\/+$/, "") || "/";
+    const m = path.match(/^\/prompts\/([^/]+)$/);
+    if (m) {
+        try {
+            return { mode: "prompt", name: decodeURIComponent(m[1]) };
+        } catch (e) {
+            return { mode: "dumps" };
+        }
+    }
+    if (path === "/systems") return { mode: "systems" };
+    if (path === "/catalog") return { mode: "catalog" };
+    return { mode: "dumps" };
+}
+
+function applyRoute() {
+    const r = parseRoute();
+    if (r.mode === "prompt") {
+        if (mode !== "prompt" || promptName !== r.name) {
+            // Hand off to the prompt loader; it owns setMode("prompt").
+            loadPromptView(r.name);
+        }
+        return;
+    }
+    // For non-prompt routes, just sync the topbar and underlying state.
+    if (mode !== r.mode) {
+        setMode(r.mode);
+    } else {
+        // Already in the right mode (e.g. after pushState from a topbar
+        // click). Just make sure the body dataset is consistent.
+        document.body.dataset.mode = mode;
+        sysBtn.classList.toggle("active", mode === "systems");
+        catBtn.classList.toggle("active", mode === "catalog");
+    }
+}
+
+function navigateToPrompt(name) {
+    if (!name) return;
+    const url = "/prompts/" + encodeURIComponent(name);
+    if (location.pathname === url) {
+        // Same URL — re-render in case data has changed.
+        loadPromptView(name);
+        return;
+    }
+    history.pushState({}, "", url);
+    applyRoute();
+}
+
+// ---------------------------------------------------------------------------
+// Prompt view: /prompts/<name> shows the full text + metadata + usage.
+// ---------------------------------------------------------------------------
+
+async function loadPromptView(name) {
+    // Enter prompt mode first so CSS / topbar reflects the new view.
+    if (mode !== "prompt") {
+        mode = "prompt";
+        document.body.dataset.mode = mode;
+        sysBtn.classList.remove("active");
+        catBtn.classList.remove("active");
+        searchEl.disabled = true;
+        searchEl.value = "";
+        clearInterval(autoTimer);
+        autoTimer = null;
+    }
+    promptName = name;
+    detailEl.innerHTML = '<div class="placeholder">Loading prompt...</div>';
+    try {
+        const r = await fetch("/api/prompts/" + encodeURIComponent(name));
+        if (r.status === 404) {
+            detailEl.innerHTML = `<div class="placeholder">No prompt named "${esc(name)}" in the catalog.</div>`;
+            return;
+        }
+        if (!r.ok) {
+            detailEl.innerHTML = `<div class="placeholder">Error ${r.status}: ${esc(await r.text())}</div>`;
+            return;
+        }
+        renderPromptView(await r.json());
+    } catch (e) {
+        detailEl.innerHTML = `<div class="placeholder">Failed: ${esc(String(e))}</div>`;
+    }
+}
+
+function renderPromptView(p) {
+    const refs = p.referenced_in || [];
+    const truncated = !!p.referenced_in_truncated;
+    const refRows = refs.map(r => `
+        <tr class="row" data-file="${esc(r.filename)}">
+            <td class="n">${esc((r.ts || "").slice(11, 19))}</td>
+            <td class="mono">${esc(r.filename)}</td>
+            <td>${esc(r.session_id ? r.session_id.slice(0, 12) : "—")}</td>
+        </tr>
+    `).join("");
+
+    detailEl.innerHTML = `
+        <h2>Prompt</h2>
+        <div class="meta-grid">
+            <span class="k">name</span><span class="v">${esc(p.name)}</span>
+            <span class="k">hash</span><span class="v mono">${esc(p.hash)}</span>
+            <span class="k">created</span><span class="v">${esc(p.created_at)}</span>
+            <span class="k">updated</span><span class="v">${esc(p.updated_at)}</span>
+            <span class="k">chars</span><span class="v">${esc(String((p.text || "").length))}</span>
+        </div>
+        <div class="cat-actions">
+            <button id="promptOpenInCat" class="button">Open in catalog</button>
+        </div>
+
+        <h2>Text</h2>
+        <textarea id="promptText" readonly title="Catalog text — editable only via the catalog view."></textarea>
+
+        <h2>Referenced in (${refs.length}${truncated ? "+" : ""})</h2>
+        ${refs.length === 0
+            ? '<div class="placeholder small">No captured requests contain this prompt.</div>'
+            : `<table class="ref-table">
+                <thead><tr><th>time</th><th>file</th><th>session</th></tr></thead>
+                <tbody>${refRows}</tbody>
+               </table>`}
+    `;
+    document.getElementById("promptText").value = p.text || "";
+    document.getElementById("promptOpenInCat").addEventListener("click", async () => {
+        // Make sure the catalog map has this entry, then switch modes.
+        try {
+            const r = await fetch("/api/catalog/entries");
+            const data = await r.json();
+            catalogEntries = data.entries || [];
+            catalogByHash = new Map(catalogEntries.map(e => [e.hash, e]));
+        } catch (e) {
+            console.error("catalog refresh failed", e);
+        }
+        const target = catalogByHash.get(p.hash);
+        if (!target) {
+            alert("Entry not found in catalog cache.");
+            return;
+        }
+        history.pushState({}, "", "/catalog");
+        setMode("catalog");
+        loadCatalogList();
+        loadCatalogEntry(p.hash);
+    });
+
+    // Make referenced-in rows clickable: switch to dumps mode and load.
+    detailEl.querySelectorAll(".ref-table tr[data-file]").forEach(row => {
+        row.addEventListener("click", () => {
+            const file = row.dataset.file;
+            if (!file) return;
+            history.pushState({}, "", "/");
+            setMode("dumps");
+            selectedFile = file;
+            loadList().then(() => loadDetail(file));
+        });
+    });
+}
+
+// ---------------------------------------------------------------------------
 // Event wiring
 // ---------------------------------------------------------------------------
 refreshBtn.addEventListener("click", () => {
     if (mode === "dumps") loadList();
     else if (mode === "systems") loadSystems();
+    else if (mode === "prompt") loadPromptView(promptName);
     else loadCatalogList();
 });
 searchEl.addEventListener("input", renderList);
@@ -1042,8 +1284,26 @@ autoEl.addEventListener("change", () => {
 });
 modeCompact.addEventListener("click", () => setViewMode("compact"));
 modeRaw.addEventListener("click", () => setViewMode("raw"));
-sysBtn.addEventListener("click", () => setMode(mode === "systems" ? "dumps" : "systems"));
-catBtn.addEventListener("click", () => setMode(mode === "catalog" ? "dumps" : "catalog"));
+sysBtn.addEventListener("click", () => {
+    if (mode === "systems") {
+        history.pushState({}, "", "/");
+        setMode("dumps");
+    } else {
+        history.pushState({}, "", "/systems");
+        setMode("systems");
+    }
+});
+catBtn.addEventListener("click", () => {
+    if (mode === "catalog") {
+        history.pushState({}, "", "/");
+        setMode("dumps");
+    } else {
+        history.pushState({}, "", "/catalog");
+        setMode("catalog");
+    }
+});
 
-document.body.dataset.mode = mode;
+window.addEventListener("popstate", applyRoute);
+
+applyRoute();
 loadList();

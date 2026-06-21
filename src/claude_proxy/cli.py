@@ -9,8 +9,15 @@ import typer
 import uvicorn
 
 from . import classify, dump
-from .prompts import existing_hashes, hash_text, write_prompt
+from .prompts import (
+    CatalogEntry,
+    hash_text,
+    migrate_seed_prompts,
+    scan_prompts,
+    write_prompt,
+)
 from .server import app, state
+from .systems import aggregate_session_systems
 from .viewer import app as viewer_app, configure_prompts_dir, configure_systems_dir
 
 
@@ -36,6 +43,21 @@ _PROMPTS_DIR_OPTION = typer.Option(
     "-P",
     "--prompts-dir",
     help="Directory containing the prompt catalog (one .md file per entry).",
+)
+
+_SIMILARITY_THRESHOLD_OPTION = typer.Option(
+    0.85,
+    "--similarity-threshold",
+    help="Minimum SequenceMatcher.ratio() (0..1) for a system block to count "
+         "as a near-duplicate of a prompt in --prompts-dir.",
+    min=0.0,
+    max=1.0,
+)
+
+_NO_PROMOTE_OPTION = typer.Option(
+    False,
+    "--no-promote",
+    help="Skip writing new prompts to --prompts-dir for unmatched system blocks.",
 )
 
 
@@ -98,6 +120,39 @@ def _view(
 cli.command(name="view")(_view)
 
 
+def _promote_unmatched_blocks(
+    agg: dict,
+    prompts_dir: Path,
+    existing: set[str],
+) -> int:
+    """Write a new entry into `prompts_dir` for each block in `agg` that is
+    not in the catalog (no `catalog_match`). The aggregate stores the full
+    `text` for every block, so we don't need to re-read source dumps.
+
+    Mutates `existing` in place. Returns the number of files written.
+    """
+    promoted = 0
+    blocks_to_check: list[dict] = []
+    blocks_to_check.extend(agg.get("top_level_system") or [])
+    for kind_blocks in (agg.get("in_message_systems") or {}).values():
+        blocks_to_check.extend(kind_blocks)
+    for entry in blocks_to_check:
+        if entry.get("catalog_match"):
+            continue
+        text = entry.get("text")
+        if not isinstance(text, str) or not text:
+            continue
+        if hash_text(text) in existing:
+            continue
+        result = write_prompt(prompts_dir, text, existing=existing)
+        if result is None:
+            continue
+        _, written_hash = result
+        existing.add(written_hash)
+        promoted += 1
+    return promoted
+
+
 def _extract_system(
     src: Path = typer.Option(
         None,
@@ -106,20 +161,40 @@ def _extract_system(
         help="Input dump directory (defaults to the same as the viewer's --data-dir).",
     ),
     dst: Path = _SYSTEMS_DIR_OPTION,
+    prompts_dir: Path = _PROMPTS_DIR_OPTION,
+    similarity_threshold: float = _SIMILARITY_THRESHOLD_OPTION,
+    no_promote: bool = _NO_PROMOTE_OPTION,
 ):
-    """Extract system-filled content from captured dumps, grouped by session id.
+    """Extract system content from the last request of each session.
 
-    Writes one <session-id>.json per distinct session into --systems-dir. Each
-    output file contains the deduplicated top-level system prompts plus every
-    in-message system reminder / command metadata / continuation banner seen
-    in that session, with counts and source-dump pointers.
+    For every distinct x-claude-code-session-id, writes one
+    `<session-id>.json` into --systems-dir. Each output references the
+    canonical prompt catalog (--prompts-dir) by name+hash; the original
+    prompt text lives in the catalog, not in the systems JSON.
+
+    Side effect: any `prompts/*.md` that lacks YAML frontmatter is
+    rewritten in place to add it (idempotent). System blocks that do not
+    match any catalog entry (exact or fuzzy) are written into
+    --prompts-dir as new entries, unless --no-promote is set.
     """
     src = src or dump.DATA_DIR
     if not src.exists():
         typer.echo(f"Source directory not found: {src}", err=True)
         raise typer.Exit(1)
     dst.mkdir(parents=True, exist_ok=True)
+    prompts_dir.mkdir(parents=True, exist_ok=True)
     dump.configure_data_dir(src)
+
+    # Migrate any bare .md seed files in prompts/ to the frontmatter shape
+    # *before* loading the catalog, so the catalog picks up the migrated
+    # entries. Idempotent on re-runs.
+    migrated = migrate_seed_prompts(prompts_dir)
+    if migrated:
+        typer.echo(f"Migrated {migrated} bare prompt file(s) to frontmatter format.")
+        typer.echo("")
+
+    catalog: dict[str, CatalogEntry] = scan_prompts(prompts_dir)
+    existing: set[str] = set(catalog.keys())
 
     # Group dumps by session id; un-sessioned dumps land in NO_SESSION.
     by_session: dict[str, list[Path]] = defaultdict(list)
@@ -133,106 +208,45 @@ def _extract_system(
         by_session[key].append(path)
 
     written = 0
+    promoted_total = 0
     for sid, paths in sorted(by_session.items(), key=lambda kv: kv[0]):
-        agg = classify.aggregate_session(paths)
-        out_name = sid if sid != classify.NO_SESSION else classify.NO_SESSION
-        out_path = dst / f"{out_name}.json"
-        out_path.write_text(json.dumps(agg, indent=2, ensure_ascii=False))
-        typer.echo(
-            f"  {sid[:8] if sid != classify.NO_SESSION else '(no session)'}  "
-            f"{agg['request_count']:>4} dumps  "
-            f"{agg['summary']['distinct_full_prompts']} full prompts  "
-            f"{agg['summary']['distinct_system_reminders']} reminder variants  ->  "
-            f"{out_path.name}"
+        agg = aggregate_session_systems(
+            paths,
+            catalog=catalog,
+            similarity_threshold=similarity_threshold,
         )
+        out_path = dst / f"{sid}.json"
+        out_path.write_text(json.dumps(agg, indent=2, ensure_ascii=False))
         written += 1
 
+        top = agg.get("top_level_system") or []
+        in_msg = agg.get("in_message_systems") or {}
+        in_msg_total = sum(len(v) for v in in_msg.values())
+        matched = sum(
+            1 for v in [top, *in_msg.values()] for e in v if e.get("catalog_match")
+        )
+
+        typer.echo(
+            f"  {sid[:12]:<14}  "
+            f"{agg.get('request_count', 0):>4} dumps  "
+            f"{len(top):>2} top · {in_msg_total:>3} in-msg · "
+            f"{matched:>3} matched  ->  {out_path.name}"
+        )
+
+        if not no_promote:
+            promoted_total += _promote_unmatched_blocks(agg, prompts_dir, existing)
+
     typer.echo("")
-    typer.echo(f"Wrote {written} session file(s) to {dst}/")
-
-    # Also build the prompts/ catalog: hash each text block in the LAST
-    # request of every session; write any text that appears in >1 distinct
-    # session. Within a session we dedupe identical text blocks (the last
-    # request is append-only, so prior occurrences are already contained in
-    # it) and skip any hash already present in prompts/ (e.g. seed entries).
-    prompts_dir = Path("prompts")
-    prompts_dir.mkdir(parents=True, exist_ok=True)
-    configure_prompts_dir(prompts_dir)
-    written_prompts = _extract_repeated_prompts(by_session, prompts_dir)
-
-    if written_prompts:
-        typer.echo("")
-        typer.echo(f"Wrote {len(written_prompts)} prompt(s) to {prompts_dir}/")
-        for path, h, count in written_prompts:
-            typer.echo(f"  {h[:23]}  {count:>3} sessions  {path.name}")
+    typer.echo(f"Wrote {written} session file(s) to {dst}/  (threshold={similarity_threshold})")
+    if no_promote:
+        typer.echo("--no-promote: skipped auto-promotion to prompts/")
+    elif promoted_total:
+        typer.echo(f"Promoted {promoted_total} new prompt(s) to {prompts_dir}/")
     else:
-        typer.echo("")
-        typer.echo(f"No repeated prompts found across sessions; {prompts_dir}/ unchanged.")
+        typer.echo(f"No new prompts to promote; {prompts_dir}/ unchanged.")
 
 
 cli.command(name="extract-system")(_extract_system)
-
-
-def _extract_repeated_prompts(
-    by_session: dict[str, list[Path]],
-    prompts_dir: Path,
-) -> list[tuple[Path, str, int]]:
-    """Hash every text block in the last request of each session; collect
-    hashes that appeared in >1 distinct session; write each as a prompt
-    catalog entry. Returns [(path, hash, session_count), ...] sorted by
-    (-session_count, hash)."""
-    buckets: dict[str, dict] = {}  # hash -> {"text": str, "sessions": set[str]}
-
-    for sid, paths in by_session.items():
-        if not paths:
-            continue
-        # Filenames sort by counter + timestamp, so max-by-name == last request.
-        last_path = max(paths, key=lambda p: p.name)
-        try:
-            data = json.loads(last_path.read_text())
-        except (json.JSONDecodeError, OSError):
-            continue
-        body = data.get("body") or {}
-        messages = body.get("messages") or []
-        seen: set[str] = set()  # dedupe text repeats inside the last request
-        for msg in messages:
-            if not isinstance(msg, dict):
-                continue
-            content = msg.get("content")
-            if isinstance(content, str):
-                blocks = [{"type": "text", "text": content}]
-            elif isinstance(content, list):
-                blocks = [b for b in content if isinstance(b, dict)]
-            else:
-                continue
-            for block in blocks:
-                if block.get("type") != "text":
-                    continue
-                text = (block.get("text") or "").strip()
-                if not text:
-                    continue
-                h = hash_text(text)
-                if h in seen:
-                    continue
-                seen.add(h)
-                bucket = buckets.setdefault(h, {"text": text, "sessions": set()})
-                bucket["sessions"].add(sid)
-
-    existing = existing_hashes(prompts_dir)
-    written: list[tuple[Path, str, int]] = []
-    for h, bucket in sorted(
-        buckets.items(),
-        key=lambda kv: (-len(kv[1]["sessions"]), kv[0]),
-    ):
-        if len(bucket["sessions"]) <= 1:
-            continue
-        result = write_prompt(prompts_dir, bucket["text"], existing=existing)
-        if result is None:
-            continue
-        path, written_hash = result
-        existing.add(written_hash)
-        written.append((path, written_hash, len(bucket["sessions"])))
-    return written
 
 
 if __name__ == "__main__":

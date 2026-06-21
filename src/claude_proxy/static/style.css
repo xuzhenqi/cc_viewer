@@ -487,8 +487,10 @@ table.headers td.v.redacted { color: #555; font-style: italic; }
 /* Hide Compact/Raw seg and auto-refresh outside dumps mode */
 body[data-mode="systems"] .seg,
 body[data-mode="catalog"] .seg,
+body[data-mode="prompt"] .seg,
 body[data-mode="systems"] .auto-refresh,
-body[data-mode="catalog"] .auto-refresh { display: none; }
+body[data-mode="catalog"] .auto-refresh,
+body[data-mode="prompt"] .auto-refresh { display: none; }
 
 /* ---------------------------------------------------------------------------
    System-prompts browser page
@@ -502,4 +504,91 @@ body[data-mode="catalog"] .auto-refresh { display: none; }
 
 .row.sys-row { grid-template-columns: 70px 50px 1fr auto; }
 .row.sys-row .method { background: #4a2d4a; color: #c97ec9; }
+
+/* ---------------------------------------------------------------------------
+   Prompt links inside the systems browser
+   --------------------------------------------------------------------------- */
+.prompt-link {
+    display: inline-block;
+    font-family: monospace;
+    font-size: 12px;
+    padding: 2px 8px;
+    margin: 4px 0;
+    border-radius: 3px;
+    background: #2d4a4a;
+    color: #7ec9c9;
+    cursor: pointer;
+    user-select: none;
+    text-decoration: none;
+}
+.prompt-link:hover { background: #3a5a5a; text-decoration: underline; }
+.prompt-link:focus { outline: 1px solid #7ec9c9; outline-offset: 1px; }
+
+.match-ratio {
+    display: inline-block;
+    margin-left: 6px;
+    font-size: 10px;
+    color: #888;
+    font-family: monospace;
+}
+
+.source-link {
+    color: #7ebec9;
+    text-decoration: none;
+    font-family: monospace;
+    font-size: 11px;
+}
+.source-link:hover { text-decoration: underline; }
+
+.sys-block-text {
+    margin: 6px 0;
+    padding: 8px 10px;
+    background: #1a1a1a;
+    border-left: 2px solid #4a2d4a;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-family: monospace;
+    font-size: 11px;
+    line-height: 1.4;
+}
+
+/* ---------------------------------------------------------------------------
+   Prompt view (/prompts/<name>)
+   --------------------------------------------------------------------------- */
+textarea#promptText {
+    width: 100%;
+    min-height: 200px;
+    font-family: monospace;
+    font-size: 12px;
+    line-height: 1.4;
+    padding: 8px;
+    background: #1a1a1a;
+    color: #ddd;
+    border: 1px solid #333;
+    border-radius: 3px;
+    resize: vertical;
+}
+
+table.ref-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+table.ref-table thead th {
+    text-align: left;
+    padding: 4px 8px;
+    border-bottom: 1px solid #333;
+    color: #888;
+    font-weight: normal;
+    font-size: 11px;
+}
+table.ref-table tbody tr {
+    cursor: pointer;
+}
+table.ref-table tbody tr:hover { background: #2a2a2a; }
+table.ref-table td {
+    padding: 4px 8px;
+    border-bottom: 1px solid #222;
+}
+table.ref-table td.mono { font-family: monospace; }
 
